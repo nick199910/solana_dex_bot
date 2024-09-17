@@ -1,9 +1,11 @@
-extern crate dotenv;
+// extern crate dotenv;
 
 use dotenv::dotenv;
 use std::env;
 
 mod utils;
+mod tick_array;
+mod constant;
 
 
 use anchor_lang::prelude::*;
@@ -77,6 +79,16 @@ impl OrcaSwapClient {
             AccountMeta::new(*tick_array_2, false),
             AccountMeta::new(*oracle, false),
         ];
+        for account in accounts.clone() {
+            match self.rpc_client.get_account(&account.pubkey).await {
+                Ok(account_data) => {
+                    println!("Account: {:?}, Owner: {:?}, Lamports: {}", account, account_data.owner, account_data.lamports);
+                },
+                Err(err) => {
+                    println!("Failed to get account {:?}: {:?}", account, err);
+                },
+            }
+        }
 
         let swap_data = SwapData {
             amount,
@@ -86,14 +98,18 @@ impl OrcaSwapClient {
             a_to_b,
         };
 
-        let data = swap_data.try_to_vec()?;
+        let data = {
+            let mut prefix = vec![248, 198, 158, 145, 225, 117, 135, 200];
+            prefix.extend(swap_data.try_to_vec()?);
+            prefix
+        };
 
-        println!("======== {:?}", data);
+        println!("======== data is {:?}", data);
 
         let instruction = Instruction {
             program_id: orca_swap_program_id,
             accounts,
-            data: swap_data.try_to_vec()?,
+            data,
         };
 
         let recent_blockhash = self.rpc_client.get_latest_blockhash().await?;
@@ -106,6 +122,15 @@ impl OrcaSwapClient {
             &[user],
             recent_blockhash,
         );
+
+        // Serialize the transaction to bytes
+        let serialized_transaction = bincode::serialize(&transaction)?;
+
+        // Encode the serialized transaction as base64
+        let base64_transaction = base64::encode(&serialized_transaction);
+
+        // Print the base64 encoded transaction
+        println!("Base64 encoded transaction: {}", base64_transaction);
 
         let signature = self.rpc_client.send_and_confirm_transaction(&transaction).await?;
         Ok(signature.to_string())
@@ -178,13 +203,13 @@ async fn test_real_orca_swap() -> std::result::Result<(), Box<dyn std::error::Er
     let user_usdc_account = client.get_or_create_associated_token_account(&user, &Pubkey::from_str(USDC_ADDRESS)?).await?;
 
     // 这些地址需要根据实际情况进行调整
-    let whirlpool = Pubkey::from_str("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc")?;
+    let whirlpool = Pubkey::from_str("HJPjoWUrhoZzkNfRpHuieeFk9WcZWjwy6PBjZ81ngndJ")?;
     let token_program = spl_token::id();
     let token_vault_a = Pubkey::from_str("3YQm7ujtXWJU2e9jhp2QGHpnn1ShXn12QjvzMvDgabpX")?;
     let token_vault_b = Pubkey::from_str("2JTw1fE2wz1SymWUQ7UqpVtrTuKjcd6mWwYwUJUCh2rq")?;
     let tick_array_0 = Pubkey::from_str("CEstjhG1v4nUgvGDyFruYEbJ18X8XeN4sX1WFCLt4D5c")?;
-    let tick_array_1 = Pubkey::from_str("A2W6hiA2nf16iqtbZt9vX8FJbiXjv3DBUG3DgTja61HT")?;
-    let tick_array_2 = Pubkey::from_str("2Eh8HEeu45tCWxY6ruLLRN6VcTSD7bfshGj7bZA87Kne")?;
+    let tick_array_1 = Pubkey::from_str("CEstjhG1v4nUgvGDyFruYEbJ18X8XeN4sX1WFCLt4D5c")?;
+    let tick_array_2 = Pubkey::from_str("CEstjhG1v4nUgvGDyFruYEbJ18X8XeN4sX1WFCLt4D5c")?;
     let oracle = Pubkey::from_str("4GkRbcYg1VKsZropgai4dMf2Nj2PkXNLf43knFpavrSi")?;
 
     let sol_balance = client.get_token_balance(&user_sol_account).await?;

@@ -8,9 +8,15 @@ solana-program = "2.0.9"
 solana-sdk = "2.0.9"
 tokio = "1.40.0"
 solana-client = "2.0.9"
-anchor-lang = "0.30.1"
+anchor-lang = {version = "0.30.1", features = ["idl-build"]}
 spl-associated-token-account = "5.0.1"
 spl-token = "6.0.0"
 bs58 = "0.5.1"
 dotenv = "0.15.0"
+bincode = "1.3.3"
+base64 = "0.22.1"
+rust_decimal = { version = "1.36.0", features = ["maths"]}
+rust_decimal_macros = "1.36"
+borsh = "0.10.3"
+
 
