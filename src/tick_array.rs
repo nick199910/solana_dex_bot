@@ -1,4 +1,5 @@
-use anchor_lang::account;
+
+
 use anchor_lang::prelude::Pubkey;
 use anchor_lang::AnchorDeserialize;
 use anchor_lang::AnchorSerialize;
@@ -34,7 +35,6 @@ pub struct TickArray {
 }
 
 
-
 /// Stores the state relevant for tracking liquidity mining rewards at the `Whirlpool` level.
 /// These values are used in conjunction with `PositionRewardInfo`, `Tick.reward_growths_outside`,
 /// and `Whirlpool.reward_last_updated_timestamp` to determine how many rewards are earned by open
@@ -54,8 +54,8 @@ pub struct WhirlpoolRewardInfo {
     pub growth_global_x64: u128,
 }
 
-#[account]
-#[derive(Default, Debug, PartialEq)]
+// #[account]
+#[derive(Default, Debug, PartialEq, AnchorDeserialize)]
 pub struct Whirlpool {
     pub whirlpools_config: Pubkey, // 32
     pub whirlpool_bump: [u8; 1],   // 1
@@ -103,9 +103,8 @@ fn div_floor(a: i32, b: i32) -> i32 {
 }
 
 
-fn pricemath_sqrt_price_x64_to_price(sqrt_price_x64: u128, decimals_a: i8, decimals_b: i8) -> String {
+pub fn pricemath_sqrt_price_x64_to_price(sqrt_price_x64: u128, decimals_a: i8, decimals_b: i8) -> String {
 
-    println!("sqrt_price_x64 is {}", sqrt_price_x64.to_string());
     let sqrt_price_x64_decimal = Decimal::from_str(&sqrt_price_x64.to_string()).unwrap();
   
     let price = sqrt_price_x64_decimal
@@ -116,7 +115,40 @@ fn pricemath_sqrt_price_x64_to_price(sqrt_price_x64: u128, decimals_a: i8, decim
     price.to_string()
 }
 
-fn tickutil_get_start_tick_index(tick_current_index: i32, tick_spacing: u16, offset: i32) -> i32 {
+pub fn calculate_token_b_amount(
+    price: &str, 
+    amount_a: u64, 
+    slippage: u16, 
+    fee_rate: u16, 
+    protocol_fee_rate: u16
+) -> u64 {
+    // 将价格字符串解析为 Decimal
+    let price = Decimal::from_str(price).unwrap();
+    
+    // 将 amount_a 转换为 Decimal
+    let amount_a_decimal = Decimal::from(amount_a);
+    
+    // 计算总手续费率（包括协议费用）
+    let total_fee_rate = fee_rate as u64 + (fee_rate as u64 * protocol_fee_rate as u64 ) / 100;
+    
+    // 计算扣除总手续费后的 amount_a
+    let fee_factor = Decimal::from(1000000u32 - total_fee_rate as u32) / Decimal::from(1000000);
+    let amount_a_after_fee = amount_a_decimal * fee_factor;
+    
+    // 计算 amount_b
+    let amount_b = amount_a_after_fee * price;
+    
+    // 计算滑点调整因子
+    let slippage_factor = Decimal::from(100 - slippage) / Decimal::from(100);
+    
+    // 应用滑点
+    let amount_b_with_slippage = amount_b * slippage_factor;
+    
+    // 向下取整并转换回 u64
+    amount_b_with_slippage.floor().to_u64().unwrap_or(u64::MAX)
+}
+
+pub fn tickutil_get_start_tick_index(tick_current_index: i32, tick_spacing: u16, offset: i32) -> i32 {
     let ticks_in_array = TICK_ARRAY_SIZE * tick_spacing as i32;
     let real_index = div_floor(tick_current_index, ticks_in_array);
     let start_tick_index = (real_index + offset) * ticks_in_array;
@@ -127,7 +159,7 @@ fn tickutil_get_start_tick_index(tick_current_index: i32, tick_spacing: u16, off
 }
 
 
-fn pdautil_get_tick_array(program_id: &solana_sdk::pubkey::Pubkey, whirlpool_pubkey: &solana_sdk::pubkey::Pubkey, start_tick_index: i32) -> solana_sdk::pubkey::Pubkey {
+pub fn pdautil_get_tick_array(program_id: &solana_sdk::pubkey::Pubkey, whirlpool_pubkey: &solana_sdk::pubkey::Pubkey, start_tick_index: i32) -> solana_sdk::pubkey::Pubkey {
     let start_tick_index_str = start_tick_index.to_string();
     let seeds = [
       b"tick_array",
@@ -138,7 +170,7 @@ fn pdautil_get_tick_array(program_id: &solana_sdk::pubkey::Pubkey, whirlpool_pub
     pubkey
 }
 
-fn poolutil_get_tick_array_pubkeys_for_swap(
+pub fn poolutil_get_tick_array_pubkeys_for_swap(
     tick_current_index: i32,
     tick_spacing: u16,
     a_to_b: bool,
@@ -158,57 +190,84 @@ fn poolutil_get_tick_array_pubkeys_for_swap(
     pubkeys
 }
 
+pub fn generate_oracle_pda(whirlpool_pubkey: &solana_sdk::pubkey::Pubkey, dex_program_id: &solana_sdk::pubkey::Pubkey) -> (solana_sdk::pubkey::Pubkey, u8) {
+    let seeds = &[
+        b"oracle",
+        whirlpool_pubkey.as_ref(),
+    ];
+    solana_sdk::pubkey::Pubkey::find_program_address(seeds, dex_program_id)
+}
+
 #[tokio::test]
 async fn test_tick_array() {
+    use std::env;
+    use dotenv::dotenv;
+
+    use crate::constant::ORCA_WHIRLPOOL_PROGRAM_ID;
+    // use crate::constant::SOL_DECIMALS;
+    // use crate::constant::USDC_DECIMALS;
     use solana_client::nonblocking::rpc_client::RpcClient as AsyncRpcClient;
     use solana_sdk::commitment_config::CommitmentConfig;
 
-    let sol_usdc_whirlpool_address = solana_sdk::pubkey::Pubkey::from_str("HJPjoWUrhoZzkNfRpHuieeFk9WcZWjwy6PBjZ81ngndJ").unwrap();
+    dotenv().ok();
+    let sol_usdc_whirlpool_address = solana_sdk::pubkey::Pubkey::from_str("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo").unwrap();
 
-    let ORCA_WHIRLPOOL_PROGRAM_ID = solana_sdk::pubkey::Pubkey::from_str("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc").unwrap();
+    let orca_whirlpool_program_id = solana_sdk::pubkey::Pubkey::from_str(ORCA_WHIRLPOOL_PROGRAM_ID).unwrap();
 
-    let SOL_DECIMALS = 9;
-    let USDC_DECIMALS = 6;
+    let rpc_url = env::vars()
+        .find(|(key, _)| key == "RPC_URL")
+        .map(|(_, value)| value)
+        .ok_or("RPC_URL not found").unwrap();
 
-
-    let rpc_url = "https://api.mainnet-beta.solana.com/";
-    let rpc_client = AsyncRpcClient::new_with_commitment(rpc_url.to_string(), 
+    let rpc_client = AsyncRpcClient::new_with_commitment(rpc_url, 
     CommitmentConfig::confirmed());
 
     let mut whirlpool_data = rpc_client.get_account_data(&sol_usdc_whirlpool_address).await.unwrap();
-
+    let whirlpool_data_slice = &mut whirlpool_data.as_mut_slice()[0..].as_ref();
     
-    // let whirlpool: Whirlpool = AnchorDeserialize::deserialize(&mut whirlpool_data.as_slice()).unwrap();
-    // println!("{:?}", whirlpool);
+    
+    let whirlpool: Whirlpool = AnchorDeserialize::deserialize(whirlpool_data_slice).unwrap();
+    println!("{:?}", whirlpool);
 
-    //   // calcu price with rust_decimal crate (at client-side)
+    // calcu price with rust_decimal crate (at client-side)
     // println!("whirlpool price {}", pricemath_sqrt_price_x64_to_price(whirlpool.sqrt_price, SOL_DECIMALS, USDC_DECIMALS));
-    // let a_to_b = true;
-    // // get tickarray for swap
-    // let tick_arrays = poolutil_get_tick_array_pubkeys_for_swap(
-    //     whirlpool.tick_current_index,
-    //     whirlpool.tick_spacing,
-    //     a_to_b,
-    //     &ORCA_WHIRLPOOL_PROGRAM_ID,
-    //     &sol_usdc_whirlpool_address,
-    // );
-    // println!("tick_arrays[0] {}", tick_arrays[0].to_string());
-    // println!("tick_arrays[1] {}", tick_arrays[1].to_string());
-    // println!("tick_arrays[2] {}", tick_arrays[2].to_string());
+    
+    let a_to_b = true;
+    // get tickarray for swap
+    let tick_arrays = poolutil_get_tick_array_pubkeys_for_swap(
+        whirlpool.tick_current_index,
+        whirlpool.tick_spacing,
+        a_to_b,
+        &orca_whirlpool_program_id,
+        &sol_usdc_whirlpool_address,
+    );
+    println!("tick_arrays[0] {}", tick_arrays[0].to_string());
+    println!("tick_arrays[1] {}", tick_arrays[1].to_string());
+    println!("tick_arrays[2] {}", tick_arrays[2].to_string());
 
-    // let mut ta0_data: &[u8] = &rpc_client.get_account_data(&tick_arrays[0]).await.unwrap();
-    // let mut ta1_data: &[u8] = &rpc_client.get_account_data(&tick_arrays[1]).await.unwrap();
-    // let mut ta2_data: &[u8] = &rpc_client.get_account_data(&tick_arrays[2]).await.unwrap();
-    // let ta0: TickArray = AnchorDeserialize::deserialize(&mut ta0_data).unwrap();
-    // let ta1: TickArray = AnchorDeserialize::deserialize(&mut ta1_data).unwrap();
-    // let ta2: TickArray = AnchorDeserialize::deserialize(&mut ta2_data).unwrap();
+    let ta0_data: &[u8] = &rpc_client.get_account_data(&tick_arrays[0]).await.unwrap();
+    let ta1_data: &[u8] = &rpc_client.get_account_data(&tick_arrays[1]).await.unwrap();
+    let ta2_data: &[u8] = &rpc_client.get_account_data(&tick_arrays[2]).await.unwrap();
+    let ta0_data = &mut ta0_data[8..].as_ref();
+    let ta0: TickArray = AnchorDeserialize::deserialize(ta0_data).unwrap();
+    let ta1_data = &mut ta1_data[8..].as_ref();
+    let ta1: TickArray = AnchorDeserialize::deserialize(ta1_data).unwrap();
+    let ta2_data = &mut ta2_data[8..].as_ref();
+    let ta2: TickArray = AnchorDeserialize::deserialize(ta2_data).unwrap();
 
-    // let ta0_start_tick_index = ta0.start_tick_index;
-    // let ta1_start_tick_index = ta1.start_tick_index;
-    // let ta2_start_tick_index = ta2.start_tick_index;
+    let ta0_start_tick_index = ta0.start_tick_index;
+    let ta1_start_tick_index = ta1.start_tick_index;
+    let ta2_start_tick_index = ta2.start_tick_index;
 
-    // println!("ta0 start_tick_index {:?}", ta0_start_tick_index);
-    // println!("ta1 start_tick_index {}", ta1_start_tick_index);
-    // println!("ta2 start_tick_index {}", ta2_start_tick_index);
+    println!("ta0 start_tick_index {:?}", ta0_start_tick_index);
+    println!("ta1 start_tick_index {}", ta1_start_tick_index);
+    println!("ta2 start_tick_index {}", ta2_start_tick_index);
+
+
+    let whirlpool = solana_sdk::pubkey::Pubkey::from_str("HJPjoWUrhoZzkNfRpHuieeFk9WcZWjwy6PBjZ81ngndJ").unwrap();
+    let oracle_address = generate_oracle_pda(&whirlpool, &orca_whirlpool_program_id);
+
+    println!("oracle_address {:?}", oracle_address.0);
+
 
 }
